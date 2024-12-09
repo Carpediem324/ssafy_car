@@ -2,9 +2,17 @@
 
 0. 가상환경
 
+
+---
 ```
-py -3.8 -m venv venv
+
+# 가상환경 설치(3.7이상이면 다된다.)
+python -m venv venv
+
 ```
+
+
+---
 
 requirements.txt
 
@@ -21,4 +29,5 @@ pip install -r .\requirements.txt
 pip install airsim
 ```
 
-requirements.txt에 airsim 넣으면 오류발생
+
+
