@@ -3,224 +3,186 @@ from DrivingInterface.drive_controller import DrivingController
 class DrivingClient(DrivingController):
     def __init__(self):
         # =========================================================== #
-        #  Area for member variables =============================== #
+        # 추가적으로 사용할 멤버 변수 초기화 영역
         # =========================================================== #
-        # Editing area starts from here
-        #
-
-        self.is_debug = False # 문제가 생겼는가
-
-        self.track_type = 99
-
-        self.is_accident = False # 사고가 났는가
-        self.recovery_count = 0 # 복구 횟수
-        self.accident_count = 0 # 사고 횟수
-
-        #
-        # Editing area ends
-        # ==========================================================#
+        
+        # 디버그 모드: True일 경우 각종 정보를 출력한다.
+        self.debug_mode = False
+        
+        # 충돌 상태 관리 변수
+        self.crash_happened = False     # 충돌로 차량이 멈춘 상태 여부
+        self.crash_timer = 0            # 차량 속도가 매우 낮은 상태(=사고 상태)가 계속되는 시간 카운트
+        self.crash_recover_counter = 0  # 후진 등을 통해 충돌 상태에서 복구하는 시간 카운트
+        
+        # 트랙 특성 파악(필요시 사용, 여기서는 임의로 활용)
+        self.track_type = None
+        
         super().__init__()
-    
+
     def control_driving(self, car_controls, sensing_info):
-
-        # =========================================================== #
-        # Area for writing code about driving rule ================= #
-        # =========================================================== #
-        # Editing area starts from here
-        #
-
-        if self.is_debug: # 문제 생겼을때 차량 정보 보여주기
-            print("=========================================================")
-            print("[MyCar] to middle: {}".format(sensing_info.to_middle))
-
-            print("[MyCar] collided: {}".format(sensing_info.collided))
-            print("[MyCar] car speed: {} km/h".format(sensing_info.speed))
-
-            print("[MyCar] is moving forward: {}".format(sensing_info.moving_forward))
-            print("[MyCar] moving angle: {}".format(sensing_info.moving_angle))
-            print("[MyCar] lap_progress: {}".format(sensing_info.lap_progress))
-
-            print("[MyCar] track_forward_angles: {}".format(sensing_info.track_forward_angles))
-            print("[MyCar] track_forward_obstacles: {}".format(sensing_info.track_forward_obstacles))
-            print("[MyCar] opponent_cars_info: {}".format(sensing_info.opponent_cars_info))
-            print("[MyCar] distance_to_way_points: {}".format(sensing_info.distance_to_way_points))
-            print("=========================================================")
-
-        ###########################################################################
-
-        ## 핸들을 돌리는데 필요한 변수 : 전방의 커브 각도, 차량 속도 (+ 중앙에서 벗어난 정도) 
-
-        ## 도로의 실제 폭의 1/2 로 계산됨
-        half_load_width = self.half_road_limit - 1.25 # 도로폭 : 10m, 차량 전폭 : 2m
-
-        ## 차량 핸들 조정을 위해 참고할 전방의 커브 값 가져오기 
-        angle_num = int(sensing_info.speed / 45) # 0~45km : 0번째 각도 참조, 45~89km : 1번째 각도 참조, 90~134km : 2번째 각도 참조, 135~179km : 4번째 각도 참조
-        ref_angle = sensing_info.track_forward_angles[angle_num]
-
-        ## 차량의 차선 중앙 정렬을 위한 미세 조정 값 계산
-        middle_add = (sensing_info.to_middle / 80) * -1 # to_middle : -6 ~ +6 (트랙을 완전히 벗어나지 않았을때) > middle_add : -0.075 ~ +0.075 (to_middle과 부호 반대)
-
-        ## 전방의 커브 각도에 따라 throttle 값을 조절하여 속도를 제어함
-        throttle_factor = 0.6 / (abs(ref_angle) + 0.1) # 커브 각이 클수록 엑셀을 살살 밟음, 커브 각이 클수록 엑셀을 세게 밟음
-        if throttle_factor > 0.11: throttle_factor = 0.11  ## throttle 값을 최대 0.81 로 설정
-        set_throttle = 0.7 + throttle_factor
-        if sensing_info.speed < 60: set_throttle = 0.9  ## 속도가 60Km/h 이하인 경우 0.9 로 설정
-
-        ## 차량의 Speed 에 따라서 핸들을 돌리는 값을 조정함
-        steer_factor = sensing_info.speed * 1.5 # 70km 이하 (50km이면 steer_factor는 75)
-        if sensing_info.speed > 70: steer_factor = sensing_info.speed * 0.85 # 70~100km (80km이면 steer_factor는 68)
-        if sensing_info.speed > 100: steer_factor = sensing_info.speed * 0.7 # 100km 이상 (120km이면 steer_factor는 84)
-
-        ## (참고할 전방의 커브 - 내 차량의 주행 각도) / (계산된 steer factor) 값으로 steering 값을 계산
-        set_steering = (ref_angle - sensing_info.moving_angle) / (steer_factor + 0.001)
-        # 커브가 왼쪽(-)으로 꺾여있고, 주행 각도가 오른쪽(+)이면 왼쪽으로 핸들 돌리기(-)
-        # 커브가 오른쪽(+)으로 꺾여있고, 주행 각도가 왼쪽(-)이면 오른쪽으로 핸들 돌리기(+)
-        # (참고할 전방의 커브 - 내 차량의 주행 각도)는 일반적인 경우 -60도에서 +60까지 일것으로 예상
+        # sensing_info를 이용해 주행 로직을 제어하는 부분
         
-        ## 차선 중앙정렬 값을 추가로 고려함
-        set_steering += middle_add # middle_add : -0.075 ~ +0.075
+        # 디버그용 정보 출력
+        if self.debug_mode:
+            print("-----------------------------------------------------------")
+            print(f"to_middle: {sensing_info.to_middle}")
+            print(f"speed: {sensing_info.speed}")
+            print(f"moving_angle: {sensing_info.moving_angle}")
+            print(f"collided: {sensing_info.collided}")
+            print(f"forward_angles: {sensing_info.track_forward_angles}")
+            print(f"obstacles: {sensing_info.track_forward_obstacles}")
+            print(f"lap_progress: {sensing_info.lap_progress}")
+            print("-----------------------------------------------------------")
+
+        # --------------------------
+        # 기본 파라미터 및 초기값 설정
+        # --------------------------
+        current_speed = sensing_info.speed
+        mid_offset = sensing_info.to_middle
+        forward_angles = sensing_info.track_forward_angles
         
-        ## 긴급 및 예외 상황 처리(초기화) ########################################################################################
-        full_throttle = True # 풀악셀은 밟아둠
-        emergency_brake = False # 비상 브레이크는 일단 떼둠
+        # 제한된 도로 폭 내에서 차량이 중앙선에 가깝게 유지하기 위한 보정값
+        # 도로 폭 대비 안전 범위를 고려하여 약간의 여유를 둔다.
+        lane_width_half = self.half_road_limit - 1.0
 
-        ## 전방 커브의 각도가 큰 경우 속도를 제어함
-        ## 차량 핸들 조정을 위해 참고하는 커브 보다 조금 더 멀리 참고하여 미리 속도를 줄임
-        road_range = int(sensing_info.speed / 30) # road_range : ~29km(0), 30~59km(0-1), 60~89km(0-2), 90~119km(0-3), 120~149km(0-4), 150km~(0-5)
-        for i in range(0, road_range): # 바로 앞 구간부터 순차적으로 고려
-            fwd_angle = abs(sensing_info.track_forward_angles[i]) 
-            if fwd_angle > 45:  ## 커브가 45도 이상인 경우 brake, throttle 을 제어
-                full_throttle = False # 풀 악셀을 뗌
-            if fwd_angle > 80:  ## 커브가 80도 이상인 경우 steering 까지 추가로 제어
-                emergency_brake = True # 비상 브레이크 밟음
-                break # 다른 구간은 더이상 고려하지 않음
+        # --------------------------
+        # 사고(충돌) 상태 판정 및 복구 로직
+        # --------------------------
+        # 일정 속도 미만에서 장시간 머무르면 충돌 상태라고 판단
+        if current_speed > 30.0:  
+            # 정상 주행 중 -> 충돌 상태 초기화
+            self.crash_happened = False
+            self.crash_timer = 0
+            self.crash_recover_counter = 0
+        else:
+            # 속도가 매우 낮은 상태가 지속되면 충돌 상태라고 판단
+            if sensing_info.lap_progress > 1.0 and abs(current_speed) < 1.0:
+                self.crash_timer += 1
+            if self.crash_timer > 6:  # 약 0.6초 이상 속도 정체 시 충돌로 간주
+                self.crash_happened = True
 
-        ## brake, throttle 제어 # 결국 마지막에 남는 set_throttle값과 set_brake값이 맨 밑에 가서 적용됨
-        set_brake = 0.0 # 밟지 않음으로 초기화
-        if full_throttle == False: # 풀악셀을 밟지 않을때
-            if sensing_info.speed > 100: # 100km 넘어가면
-                set_brake = 0.3 # 속도 증가 (풀 악셀, 세미 브레이크)
-            if sensing_info.speed > 120: # 120km 넘어가면
-                set_throttle = 0.7 # 속도 유지 (노말 악셀, 노말 브레이크)
-                set_brake = 0.7 
-            if sensing_info.speed > 130: # 130km 넘어가면
-                set_throttle = 0.5 # 속도 감소 (하프 악셀, 풀 브레이크)
-                set_brake = 1.0 
+        # 충돌 상태면 후진으로 복구 시도
+        if self.crash_happened:
+            # 약간 핸들을 꺾고 후진
+            car_controls.steering = 0.05
+            car_controls.throttle = -1.0
+            car_controls.brake = 0.0
+            self.crash_recover_counter += 1
+            
+            # 일정 시간 후진 후 복구 완료 처리
+            if self.crash_recover_counter > 20:
+                self.crash_happened = False
+                self.crash_timer = 0
+                self.crash_recover_counter = 0
+            return car_controls
 
-        ## steering 까지 추가로 제어
-        if emergency_brake: # 비상 브레이크 밟을때
-            if set_steering > 0: # 오른쪽으로 커브돌때
-                set_steering += 0.3 # 커브 0.3 추가
-            else: # 왼쪽으로 커브돌때
-                set_steering -= 0.3 # 커브 -0.3 추가
+        # --------------------------
+        # 주행 방향 및 속도 제어 로직
+        # --------------------------
 
+        # 전방 커브 각도 분석을 통한 주행 방향 참고:
+        # 속도에 따라 참조할 각도 인덱스 결정(속도가 높을수록 앞쪽 각도 참조)
+        angle_index = min(int(current_speed / 50), len(forward_angles)-1) 
+        target_angle = forward_angles[angle_index]
 
-        ## 장애물 피하기 
-        ## 1. 장애물 인식
-        if sensing_info.track_forward_obstacles: # 장애물이 인식될때
-            first_obstacles = sensing_info.track_forward_obstacles[0]
-            first_dist = first_obstacles['dist']
-        ## 2. 피할 조건 설정
-            if first_dist < 30: # 30m 이내로 장애물이 들어오면
-                first_to_middle = first_obstacles['to_middle']
-                car_to_middle = sensing_info.to_middle
-                diff_to_middle = first_to_middle - car_to_middle # 장애물과 차의 위치차이
-                print('diff_to_middle', diff_to_middle)
-                steer_coeff = 50
-                ## 3. 스티어링 조절
-                if abs(diff_to_middle) < (2 + 0.2): # 차이가 2.2m보다 작으면 # 0.2m는 여유
-                    need_steering = ((2 + 0.2) - abs(diff_to_middle)) / (2 + 0.2) # 스티어링이 필요한 정도 # 차이가 0일때 1
-                    if car_to_middle > 0: # 차가 트랙보다 오른쪽에 있으면
-                        # 오른쪽 트랙에 여유가 있는지 계산
-                        if 5 - max(car_to_middle, first_to_middle) > (2 + 0.2): 
-                            # 오른쪽으로 이동
-                            set_steering = +need_steering * steer_coeff / steer_factor # steer_factor에 따라 조절 # steer_factor가 0일때?
+        # 차량이 중앙에서 얼마나 벗어났는지, 그리고 트랙 진행 방향 대비 현재 주행 각도를 반영
+        # 중앙 정렬을 위한 미세 조정: 중앙선에서 멀어질수록 반대 방향으로 미세 조정
+        center_adjust = - (mid_offset / 80.0)  # 중앙에서 최대 ±6m 정도; 이를 80으로 나눠 0.075 내외로 변환
+
+        # 커브 각도 대비 현재 진행 각도 차이를 통해 핸들 조정값 계산
+        # 속도가 높을수록 민감도(steer_factor) 감소
+        if current_speed <= 70:
+            steer_factor = 1.3
+        elif current_speed <= 100:
+            steer_factor = 0.9
+        else:
+            steer_factor = 0.7
+        steering_input = (target_angle - sensing_info.moving_angle) / (current_speed * steer_factor + 0.001)
+        
+        # 중앙 정렬값 추가
+        steering_input += center_adjust
+
+        # 속도 제어: 커브가 클수록 속도를 약간 줄임
+        curve_intensity = abs(target_angle)
+        # 기본 스로틀
+        throttle_input = 0.75
+        # 커브 강도에 따라 스로틀 조정
+        if curve_intensity > 30:
+            throttle_input = 0.6
+        if curve_intensity > 60:
+            throttle_input = 0.4
+        
+        # 저속구간일 경우 초기 가속
+        if current_speed < 50:
+            throttle_input = 0.9
+
+        # 장애물 회피 로직
+        # 가장 가까운 장애물을 파악하고, 일정 거리 이하이면 회피 핸들 조정
+        brake_input = 0.0
+        if sensing_info.track_forward_obstacles:
+            nearest_obs = sensing_info.track_forward_obstacles[0]
+            obs_dist = nearest_obs['dist']
+            obs_pos = nearest_obs['to_middle']
+
+            # 장애물이 가까울 경우 스티어링 보정 
+            if obs_dist < 30:
+                # 장애물과 차의 상대 위치 확인
+                diff_pos = obs_pos - mid_offset
+                safe_margin = 2.2  # 차량 폭 및 여유 포함한 최소 회피거리
+                
+                # 장애물이 차로와 겹칠 경우 회피 필요
+                if abs(diff_pos) < safe_margin:
+                    # 어느 방향으로 피할지 결정: 여유 공간이 넓은 쪽으로 회피
+                    if mid_offset >= 0:
+                        # 차량이 오른쪽에 치우쳐 있으면 왼쪽 여유 확인
+                        left_space = lane_width_half + min(mid_offset, obs_pos)
+                        right_space = lane_width_half - max(mid_offset, obs_pos)
+                        if right_space > safe_margin:
+                            # 오른쪽으로 회피
+                            steering_input += (safe_margin - abs(diff_pos)) * 0.5
                         else:
-                            # 왼쪽으로 이동
-                            set_steering = -need_steering * steer_coeff / steer_factor # 속도가 커지면 steer_factor 커짐, 커브각(set_steering) 줄어듬  
-                    if car_to_middle < 0: # 차가 트랙보다 왼쪽에 있으면
-                        # 왼쪽 트랙에 여유가 있는지 계산
-                        if 5 + min(car_to_middle, first_to_middle) > (2 + 0.2): 
-                            # 왼쪽으로 이동
-                            set_steering = -need_steering * steer_coeff / steer_factor
-                        else:
-                            # 오른쪽으로 이동
-                            set_steering = +need_steering * steer_coeff / steer_factor
-                    # 차량이 정가운데 있는경우 
+                            # 왼쪽으로 회피
+                            steering_input -= (safe_margin - abs(diff_pos)) * 0.5
                     else:
-                        # 장애물이 왼쪽에 있는경우 핸들은 오른쪽으로 
-                        if first_to_middle < 0:
-                            set_steering = +need_steering * steer_coeff / steer_factor
-                        # 장애물이 오른쪽에 있는경우 핸들은 왼쪽으로
-                        if first_to_middle > 0:
-                            set_steering = -need_steering * steer_coeff / steer_factor
-                print('set_steering', set_steering)
-                if set_steering > 1: # set_steering이 1보다 커진 경우 보정해줌
-                    set_steering = 1
+                        # 차량이 왼쪽에 치우쳐 있을 경우
+                        left_space = lane_width_half + min(mid_offset, obs_pos)
+                        right_space = lane_width_half - max(mid_offset, obs_pos)
+                        if left_space > safe_margin:
+                            # 왼쪽으로 회피
+                            steering_input -= (safe_margin - abs(diff_pos)) * 0.5
+                        else:
+                            # 오른쪽으로 회피
+                            steering_input += (safe_margin - abs(diff_pos)) * 0.5
 
-        ## 충돌 상황 감지 후 회피 하기 (1~5 단계)
-        ## 1. 30Km/h 이상의 속도로 달리는 경우 정상 적인 상황으로 간주
-        if sensing_info.speed > 30.0:
-            self.is_accident = False # 사고 안났다고 인식
-            self.recovery_count = 0 # 복구 카운트 초기화
-            self.accident_count = 0 # 사고 카운트 초기화
+                    # 회피 중 속도 조정(감속)
+                    if current_speed > 80:
+                        throttle_input = 0.5
+                        brake_input = 0.3
 
-        ## 2. 레이싱 시작 후 Speed 1km/h 이하가 된 경우 상황 체크 (사고 직후 장애물이나 벽에서 살짝 밀려난 경우)
-        if sensing_info.lap_progress > 0.5 and self.is_accident == False and (sensing_info.speed < 1.0 and sensing_info.speed > -1.0): # 구간의 절반도 가지 않았는데, 사고는 나지 않았고, 속도가 -1km ~ 1km인 경우
-            self.accident_count += 1 # 사고 카운트
+        # 스티어링 값 범위 제한
+        if steering_input > 1:
+            steering_input = 1
+        elif steering_input < -1:
+            steering_input = -1
 
-        ## 3. Speed 1km/h 이하인 상태가 지속된 경우 충돌로 인해 멈준 것으로 간주
-        if self.accident_count > 6: # 사고카운트가 6이 넘어가면 (0.1초마다 적용되었으니 0.6초가 지난 경우)
-            self.is_accident = True # 사고났음을 알림
+        # 최종 결정값 반영
+        car_controls.steering = steering_input
+        car_controls.throttle = throttle_input
+        car_controls.brake = brake_input
 
-        ## 4. 충돌로 멈춘 경우 후진 시작
-        if self.is_accident == True: # 사고난경우
-            set_steering = 0.02 # 오른쪽으로 핸들 살짝 꺾은 후
-            set_brake = 0.0 # 브레이크는 떼고
-            set_throttle = -1 # 풀악셀로 후진
-            self.recovery_count += 1 # 사고를 복구한것으로 카운트
+        if self.debug_mode:
+            print(f"Steering: {car_controls.steering}, Throttle: {car_controls.throttle}, Brake: {car_controls.brake}")
 
-        ## 5. 어느 정도 후진이 되었을 때 충돌을 회피 했다고 간주 후 정상 주행 상태로 돌림
-        if self.recovery_count > 20: # 복구 카운트가 20이 넘은 경우 (0.1초마다 적용되었으니 2초가 지난 경우)
-            self.is_accident = False # 사고를 복구했다고 표시
-            self.recovery_count = 0 # 복구 카운트 초기화
-            self.accident_count = 0 # 사고 카운트 초기화
-            set_steering = 0 # 핸들 초기화
-            set_brake = 0 # 브레이크 초기화
-            set_throttle = 0 # 악셀 초기화
-        ################################################################################################################
-
-        # Moving straight forward
-        car_controls.steering = set_steering # 위에서 결정한 핸들 값을 적용 (0.1초마다 계산하여 적용)
-        car_controls.throttle = set_throttle # 위에서 결정한 악셀 값을 적용 (0.1초마다 계산하여 적용)
-        car_controls.brake = set_brake # 위에서 결정한 브레이크 값을 적용 (0.1초마다 계산하여 적용)
-        
-        if self.is_debug: # 코드상 문제 생겼을때는 그때의 핸들, 악셀, 브레이크 값 출력 
-            print("[MyCar] steering:{}, throttle:{}, brake:{}"\
-                  .format(car_controls.steering, car_controls.throttle, car_controls.brake))
-
-        #
-        # Editing area ends
-        # ==========================================================#
         return car_controls
 
-
-    # ============================
-    # If you have NOT changed the <settings.json> file
-    # ===> player_name = ""
-    #
-    # If you changed the <settings.json> file
-    # ===> player_name = "My car name" (specified in the json file)  ex) Car1
-    # ============================
     def set_player_name(self):
+        # 별도로 플레이어 이름을 지정하지 않음
         player_name = ""
         return player_name
 
-
 if __name__ == '__main__':
     print("[MyCar] Start Bot!")
-    client = DrivingClient() # 위 함수 실행 # car_controls 리턴
-    return_code = client.run() # 리턴받은 car_controls 실행
+    client = DrivingClient()
+    return_code = client.run()
     print("[MyCar] End Bot!")
-
     exit(return_code)
